@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>정시응시 ONTIME-HIGH</title>
+
+<link rel="manifest" href="/ontime-high/manifest.json">
+<meta name="theme-color" content="#1B4332">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="정시응시">
+<link rel="apple-touch-icon" href="/ontime-high/icon-192.png">
+<link rel="icon" href="/ontime-high/icon-192.png">
+
+<style>
+  :root{
+    /* 구글이 iframe 아래에 강제로 붙이는 회색 안내줄 높이(px).
+       기기마다 다를 수 있어 값만 바꿔 조정한다. 기본 8px. */
+    --gs-crop: 8px;
+    --bg: #1B4332;
+    --accent: #74C69D;
+  }
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background:var(--bg); overflow:hidden;
+    -webkit-text-size-adjust:100%;
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  }
+  #frameWrap{
+    position:fixed; inset:0;
+    overflow:hidden;              /* 회색 안내줄을 잘라내는 창 */
+    background:var(--bg);
+  }
+  #appFrame{
+    display:block; border:0;
+    width:100%;
+    height:calc(100% + var(--gs-crop));   /* 아래로 밀어내 잘라냄 */
+    background:#fff;
+  }
+
+  /* ── 로딩 ───────────────────────────────── */
+  #splash{
+    position:fixed; inset:0; z-index:50;
+    background:var(--bg); color:var(--accent);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:18px; transition:opacity .35s; 
+  }
+  #splash img{ width:88px; height:88px; border-radius:20px; }
+  #splash p{ margin:0; font-size:14px; letter-spacing:.02em; opacity:.85; }
+  #splash.hide{ opacity:0; pointer-events:none; }
+
+  /* ── 설치 안내 바 ───────────────────────── */
+  #installBar{
+    position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom));
+    z-index:60; display:none;
+    background:#123528; color:#E8F5EE;
+    border:1px solid #2C5D47; border-radius:16px;
+    padding:14px 16px; box-shadow:0 8px 28px rgba(0,0,0,.35);
+  }
+  #installBar.show{ display:block; }
+  #installBar .t{ font-size:15px; font-weight:700; margin-bottom:4px; }
+  #installBar .d{ font-size:13px; line-height:1.5; opacity:.82; }
+  #installBar .row{ display:flex; gap:8px; margin-top:12px; }
+  #installBar button{
+    flex:1; border:0; border-radius:11px; padding:11px 0;
+    font-size:14px; font-weight:700; font-family:inherit; cursor:pointer;
+  }
+  #btnInstall{ background:var(--accent); color:#102E22; }
+  #btnLater{ flex:0 0 84px; background:transparent; color:#9FBFB0; border:1px solid #2C5D47; }
+</style>
+</head>
+<body>
+
+<div id="frameWrap">
+  <iframe id="appFrame"
+          src="about:blank"
+          referrerpolicy="no-referrer"
+          allow="clipboard-write; camera"
+          allowfullscreen></iframe>
+</div>
+
+<div id="splash">
+  <img src="/ontime-high/icon-192.png" alt="">
+  <p>정시응시 ONTIME-HIGH 여는 중…</p>
+</div>
+
+<div id="installBar">
+  <div class="t">홈 화면에 앱으로 설치하기</div>
+  <div class="d" id="installDesc">설치하면 주소창 없이 앱처럼 바로 실행됩니다.</div>
+  <div class="row" id="installBtns">
+    <button id="btnLater">나중에</button>
+    <button id="btnInstall">설치하기</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* Apps Script 실제 배포 주소 (/exec) */
+  var EXEC_URL = "https://script.google.com/macros/s/AKfycbx1jyNmniYt3KZzbDVI8tcsY-bSNq8CPPvQT6Sc6MNVx3YxL5flAM9l_UJbT-WgY8Y/exec";
+
+  /* 이 껍데기 전용 localStorage 키 (다른 앱과 절대 겹치지 않게) */
+  var LS_DISMISS = "ontimeHigh.installDismissedAt";
+
+  var frame   = document.getElementById("appFrame");
+  var splash  = document.getElementById("splash");
+  var bar     = document.getElementById("installBar");
+
+  /* ── 1. 주소창 파라미터를 그대로 앱에 넘긴다 ──────────────────
+     체크인 QR(?page=review&kiosk=…)처럼 파라미터가 붙은 주소로 들어와도
+     앱이 올바른 화면을 열도록 한다. */
+  var qs = window.location.search || "";
+  frame.src = EXEC_URL + qs;
+
+  frame.addEventListener("load", function(){
+    splash.classList.add("hide");
+    lockFrameWidth();
+  });
+  setTimeout(function(){ splash.classList.add("hide"); }, 6000);
+
+  /* ── 2. lockFrameWidth ────────────────────────────────────────
+     standalone(설치앱) 모드에서 iframe이 데스크톱 폭 980px 기준으로
+     레이아웃을 잡아 글씨가 깨알같이 작아지는 것을 막는다.
+     실제 픽셀 폭을 명시적으로 고정해준다. */
+  function lockFrameWidth(){
+    var w = document.documentElement.clientWidth || window.innerWidth;
+    if (w > 0) frame.style.width = w + "px";
+  }
+  window.addEventListener("resize", lockFrameWidth);
+  window.addEventListener("orientationchange", function(){
+    setTimeout(lockFrameWidth, 250);
+  });
+  lockFrameWidth();
+
+  /* ── 3. 서비스워커 ───────────────────────────────────────────── */
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function(){
+      navigator.serviceWorker.register("/ontime-high/sw.js", { scope: "/ontime-high/" })
+        .catch(function(){ /* 실패해도 앱 동작에는 지장 없음 */ });
+    });
+  }
+
+  /* ── 4. 설치 안내 ────────────────────────────────────────────── */
+  var deferred = null;
+  var isStandalone =
+        window.matchMedia("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true;
+
+  function recentlyDismissed(){
+    var t = Number(localStorage.getItem(LS_DISMISS) || 0);
+    return t && (Date.now() - t) < 1000 * 60 * 60 * 24 * 3;  // 3일간 재노출 안 함
+  }
+
+  window.addEventListener("beforeinstallprompt", function(e){
+    e.preventDefault();
+    deferred = e;
+    if (!isStandalone && !recentlyDismissed()) bar.classList.add("show");
+  });
+
+  document.getElementById("btnInstall").addEventListener("click", function(){
+    if (!deferred) return;
+    deferred.prompt();
+    deferred.userChoice.then(function(){
+      deferred = null;
+      bar.classList.remove("show");
+    });
+  });
+
+  document.getElementById("btnLater").addEventListener("click", function(){
+    try { localStorage.setItem(LS_DISMISS, String(Date.now())); } catch(err){}
+    bar.classList.remove("show");
+  });
+
+  window.addEventListener("appinstalled", function(){
+    bar.classList.remove("show");
+  });
+
+  /* 아이폰(사파리)은 beforeinstallprompt가 없다 — 수동 안내로 대체 */
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  if (isIOS && !isStandalone && !recentlyDismissed()) {
+    document.getElementById("installDesc").innerHTML =
+      "사파리 아래쪽 <b>공유 ⬆︎</b> → <b>홈 화면에 추가</b>를 누르면<br>앱처럼 저장됩니다.";
+    document.getElementById("btnInstall").style.display = "none";
+    document.getElementById("btnLater").style.flex = "1";
+    document.getElementById("btnLater").textContent = "확인";
+    setTimeout(function(){ bar.classList.add("show"); }, 1200);
+  }
+})();
+</script>
+</body>
+</html>
